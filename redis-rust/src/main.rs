@@ -8,6 +8,10 @@ use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr};
 
+enum ErrorKind {
+    ClientClosedConnection,
+}
+
 type Connections = HashMap<usize, Client>;
 
 struct Client {
@@ -68,11 +72,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 Token(client_id) => {
                     if event.is_readable() {
+                        let mut closed = false;
                         if let Some(_client) = connections.get_mut(&client_id) {
-                            receive(&mut buffer, max_message_bytes, _client, client_id);
-                            _client.stream.write(b"+PONG\r\n")?;
+                            if let Ok(()) =
+                                receive(&mut buffer, max_message_bytes, _client, client_id)
+                            {
+                                _client.stream.write(b"+PONG\r\n")?;
+                            } else {
+                                poll.registry().deregister(&mut _client.stream)?;
+                                _client.stream.shutdown(Shutdown::Both)?;
+                                closed = true;
+                            }
                         } else {
                             println!("ERROR: unknown token id={}", client_id);
+                        }
+
+                        if closed {
+                            // FIXME: salvage `client_id` value
+                            connections.remove(&client_id);
+                            println!("Client {} disconnected", client_id);
                         }
                     }
                 }
@@ -82,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Handles incoming all incoming connections.
+/// Handles all incoming connections.
 /// Connections are processed until WouldBlock error occurs.
 fn accept_connections(
     poll: &mut Poll,
@@ -115,7 +133,14 @@ fn accept_connections(
 }
 
 /// Handles incoming messages.
-fn receive(buffer: &mut Vec<u8>, max_message_bytes: usize, client: &mut Client, client_id: usize) {
+///
+/// SIDE-EFFECTS: overwrites and then zeros `buffer`.
+fn receive(
+    buffer: &mut Vec<u8>,
+    max_message_bytes: usize,
+    client: &mut Client,
+    client_id: usize,
+) -> Result<(), ErrorKind> {
     let mut offset = 0;
     loop {
         match client.stream.read(&mut buffer[offset..]) {
@@ -123,7 +148,7 @@ fn receive(buffer: &mut Vec<u8>, max_message_bytes: usize, client: &mut Client, 
                 if offset > 0 {
                     break;
                 } else {
-                    panic!("Connection aborted");
+                    return Err(ErrorKind::ClientClosedConnection);
                 }
             }
             Ok(n_bytes) => {
@@ -153,6 +178,7 @@ fn receive(buffer: &mut Vec<u8>, max_message_bytes: usize, client: &mut Client, 
         for i in 0..offset {
             buffer[i] = 0; // Ensure no payload leakage
         }
+        return Ok(());
     } else {
         panic!("Empty message");
     }
