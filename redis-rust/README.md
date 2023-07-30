@@ -8,3 +8,7 @@ cargo run # or ./spawn_redis_server.sh
 ```bash
 redis-cli # When you write 'PING', you should receive 'PONG' and so on
 ```
+## Resources
+https://gitlab.com/dpezely/chat-server
+https://docs.rs/mio/latest/mio/guide/
+https://app.codecrafters.io/courses/redis/stages/3
