@@ -1,15 +1,12 @@
-extern crate dotenv;
-#[macro_use]
-extern crate dotenv_codegen;
 extern crate mio;
 
-use std::collections::HashMap;
-use std::error::Error;
-use std::net::{IpAddr, Shutdown, SocketAddr};
-
-use dotenv::dotenv;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
+use std::collections::HashMap;
+use std::env;
+use std::error::Error;
+use std::io::{Read, Write};
+use std::net::{IpAddr, Shutdown, SocketAddr};
 
 struct Client {
     stream: mio::net::TcpStream,
@@ -18,11 +15,10 @@ struct Client {
 const CONN_ACCEPT_TOKEN: Token = Token(0);
 
 fn main() -> Result<(), Box<dyn Error>> {
-    dotenv().ok();
-    let listen_ip_addr: IpAddr = dotenv!["LISTEN_IP_ADDR"].parse()?;
-    let listen_ip_port: u16 = dotenv!["LISTEN_IP_PORT"].parse()?;
-    let max_clients: usize = dotenv!["MAX_CLIENTS"].parse()?;
-    let max_message_bytes: usize = dotenv!["MAX_MESSAGE_BYTES"].parse()?;
+    let listen_ip_addr: IpAddr = env::var("LISTEN_IP_ADDR")?.parse()?;
+    let listen_ip_port: u16 = env::var("LISTEN_IP_PORT")?.parse()?;
+    let max_clients: usize = env::var("MAX_CLIENTS")?.parse()?;
+    let max_message_bytes: usize = env::var("MAX_MESSAGE_BYTES")?.parse()?;
 
     let mut poll = Poll::new().expect("Failed to create poll instance");
     let mut events = Events::with_capacity(128);
@@ -71,30 +67,66 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     )
                                     .expect("Failed to register client read/write socket");
                                 connections.insert(next_client_id, Client { stream });
+                                next_client_id += 1;
+                                println!("Accepted a new connection");
                             }
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                             Err(e) => panic!("Unexpected error={:?}", e),
                         }
                     }
                 }
-                Token(token_id) => {
+                Token(client_id) => {
                     if event.is_readable() {
                         let mut closed = false;
-                        if let Some(_client) = connections.get_mut(&token_id) {
-                            println!("Received a message!");
-                            // if let Ok(req) = self.receive(&mut client.stream, &mut buffer) {
-                            //     println!("Received a message!");
-                            // } else {
-                            //     poll.registry().deregister(&mut client.stream)?;
-                            //     client.stream.shutdown(Shutdown::Both)?;
-                            //     closed = true;
-                            // }
+                        if let Some(_client) = connections.get_mut(&client_id) {
+                            let mut offset = 0;
+                            loop {
+                                match _client.stream.read(&mut buffer[offset..]) {
+                                    Ok(0) => {
+                                        if offset > 0 {
+                                            break;
+                                        } else {
+                                            panic!("Connection aborted");
+                                        }
+                                    }
+                                    Ok(n_bytes) => {
+                                        offset += n_bytes;
+                                        if offset == max_message_bytes {
+                                            println!("ERROR: increase buffer capacity!");
+                                            panic!("Buffer too small");
+                                        }
+                                    }
+                                    Err(ref e)
+                                        if e.kind() == std::io::ErrorKind::WouldBlock
+                                            || e.kind() == std::io::ErrorKind::Interrupted =>
+                                    {
+                                        break
+                                    }
+                                    Err(e) => panic!("Unexpected error={:?}", e),
+                                }
+                            }
+
+                            println!(
+                                "Received from client {}: {}",
+                                client_id,
+                                std::str::from_utf8(&buffer).unwrap()
+                            );
+
+                            if offset > 0 {
+                                for i in 0..offset {
+                                    buffer[i] = 0; // Ensure no payload leakage
+                                }
+                            } else {
+                                panic!("Empty message");
+                            }
+
+                            _client.stream.write(b"+PONG\r\n")?;
                         } else {
-                            println!("ERROR: unknown token id={}", token_id);
+                            println!("ERROR: unknown token id={}", client_id);
                         }
                         if closed {
                             // FIXME: salvage `token_id` value
-                            connections.remove(&token_id);
+                            connections.remove(&client_id);
                         }
                     }
                 }
