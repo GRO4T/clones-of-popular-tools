@@ -23,6 +23,10 @@ func main() {
 			panic(err)
 	}
 
+  cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
+	}
+
   err := cmd.Run()
 
 	if err != nil {
